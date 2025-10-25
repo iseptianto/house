@@ -13,17 +13,21 @@ jobs:
 
     steps:
       - name: Checkout code
-        uses: actions/checkout@v2
+        uses: actions/checkout@v4
 
       - name: Set up Python
-        uses: actions/setup-python@v2
+        uses: actions/setup-python@v4
         with:
-          python-version: '3.11.9'
+          python-version: '3.11'
 
       - name: Install dependencies
         run: |
           python -m pip install --upgrade pip
           pip install -r requirements.txt
+
+      - name: Create necessary directories
+        run: |
+          mkdir -p data/processed models/trained
 
       - name: Process data
         run: |
@@ -31,7 +35,7 @@ jobs:
 
       - name: Engineer features
         run: |
-          python src/features/engineer.py --input data/processed/cleaned_house_data.csv --output data/processed/featured_house_data.csv --preprocessor models/trained/preprocessor.pkl
+          python src/features/engineer.py --input data/processed/cleaned_house_data.csv --output data/processed/featured_house_data.csv --preprocessor models/barupreprocessor.pkl
 
       - name: Upload processed data
         uses: actions/upload-artifact@v4
@@ -43,7 +47,7 @@ jobs:
         uses: actions/upload-artifact@v4
         with:
           name: preprocessor
-          path: models/trained/preprocessor.pkl
+          path: models/barupreprocessor.pkl
 
   model-training:
     needs: data-processing
@@ -51,23 +55,33 @@ jobs:
 
     steps:
       - name: Checkout code
-        uses: actions/checkout@v2
+        uses: actions/checkout@v4
 
       - name: Set up Python
-        uses: actions/setup-python@v2
+        uses: actions/setup-python@v4
         with:
-          python-version: '3.11.9'
+          python-version: '3.11'
 
       - name: Install dependencies
         run: |
           python -m pip install --upgrade pip
           pip install -r requirements.txt
 
+      - name: Create necessary directories
+        run: |
+          mkdir -p models/trained
+
       - name: Download processed data
         uses: actions/download-artifact@v4
         with:
           name: processed-data
           path: data/processed/
+
+      - name: Download preprocessor
+        uses: actions/download-artifact@v4
+        with:
+          name: preprocessor
+          path: models/
 
       - name: Set up MLflow
         run: |
@@ -77,13 +91,15 @@ jobs:
       - name: Wait for MLflow to start
         run: |
           for i in {1..10}; do
-            curl -f http://localhost:5000/health || sleep 5;
+            if curl -f http://localhost:5000/health; then
+              break
+            fi
+            sleep 5
           done
 
       - name: Train model
         run: |
-          mkdir -p models
-          python src/models/train_model.py --config configs/model_config.yaml --data data/processed/featured_house_data.csv --models-dir models --mlflow-tracking-uri http://localhost:5000
+          python src/models/train_model.py --config models/model_config.yaml --data data/processed/featured_house_data.csv --models-dir models --mlflow-tracking-uri http://localhost:5000
 
       - name: Upload trained model
         uses: actions/upload-artifact@v4
@@ -102,7 +118,7 @@ jobs:
 
     steps:
       - name: Checkout code
-        uses: actions/checkout@v2
+        uses: actions/checkout@v4
 
       - name: Download trained model
         uses: actions/download-artifact@v4
@@ -114,7 +130,11 @@ jobs:
         uses: actions/download-artifact@v4
         with:
           name: preprocessor
-          path: models/trained/
+          path: models/
+
+      - name: Create final.csv for Streamlit
+        run: |
+          cp data/processed/featured_house_data.csv final.csv
 
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@v3
@@ -133,3 +153,5 @@ jobs:
           file: ./Dockerfile
           push: true
           tags: docker.io/${{ vars.DOCKERHUB_USERNAME }}/house-price-model:latest
+          cache-from: type=gha
+          cache-to: type=gha,mode=max

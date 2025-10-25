@@ -12,7 +12,7 @@ st.set_page_config(page_title="House Price Prediction", page_icon="🏠", layout
 lang_col1, lang_col2 = st.columns([4, 1])
 with lang_col2:
     lang = st.selectbox(
-        "",
+        "Language / Bahasa",
         options=['🇺🇸 English', '🇮🇩 Indonesia'],
         index=0,
         key='language'
@@ -23,9 +23,43 @@ with lang_col2:
 def t(key):
     return TRANSLATIONS[current_lang].get(key, key)
 
-# ====== PENGATURAN ======
-API_URL_DEFAULT = os.getenv("API_URL", "http://localhost:8000")
-CSV_PATH_DEFAULT = os.getenv("CSV_PATH", "final.csv")
+# ====== SETTINGS ======
+def validate_env_vars():
+    """Validate required environment variables."""
+    # For Streamlit Cloud, use a mock/demo mode since FastAPI won't be running
+    api_url = os.getenv("API_URL", "http://localhost:8000")
+    csv_path = os.getenv("CSV_PATH", "final.csv")
+
+    # Validate API URL format
+    if not api_url.startswith(('http://', 'https://')):
+        raise ValueError(f"Invalid API_URL format: {api_url}. Must start with http:// or https://")
+
+    # For Streamlit Cloud deployment, check if we're in demo mode
+    is_streamlit_cloud = os.getenv("STREAMLIT_SERVER_HEADLESS", "false").lower() == "true"
+
+    if is_streamlit_cloud:
+        # st.info("🚀 Running in Streamlit Cloud - using demo mode (FastAPI not available)")
+        api_url = "demo"  # Special marker for demo mode
+    else:
+        # Check if API is available, if not, fall back to demo mode
+        try:
+            import requests
+            response = requests.get(f"{api_url}/health", timeout=5)
+            if not response.ok:
+                # st.warning("⚠️ FastAPI server not responding. Falling back to demo mode.")
+                api_url = "demo"
+        except Exception as e:
+            # st.warning(f"⚠️ Cannot connect to FastAPI server: {e}. Falling back to demo mode.")
+            api_url = "demo"
+
+    # Validate CSV path exists or is default
+    if csv_path != "final.csv" and not os.path.exists(csv_path):
+        # st.warning(f"CSV path '{csv_path}' not found. Using default 'final.csv'")
+        csv_path = "final.csv"
+
+    return api_url, csv_path
+
+API_URL_DEFAULT, CSV_PATH_DEFAULT = validate_env_vars()
 
 with st.sidebar:
     st.header(f"⚙️ {t('settings')}")
@@ -69,16 +103,10 @@ except Exception as e:
 st.title(t('title'))
 st.write(t('subtitle'))
 
-st.title("🏠 House Price Prediction")
-st.markdown("A simple MLOps demonstration project for real-time house price prediction")
-
 if error_loading:
-    st.error(f"Gagal load opsi dari CSV: {error_loading}")
-    st.info("Silakan periksa path CSV di sidebar atau upload file `final.csv`.")
+    st.error(f"{t('error_loading')}: {error_loading}")
+    st.info("Please check the CSV path in the sidebar or upload the `final.csv` file.")
     st.stop()
-
-# Create two columns for input and results
-col_input, col_results = st.columns([2, 3])
 
 # ====== FORM INPUT ======
 st.subheader(f"🏘️ {t('input_section')}")
@@ -109,124 +137,78 @@ with col2:
     cities = prov2cities.get(provinsi, [])
     kota_kab = st.selectbox(t('city'), cities, index=0 if cities else None)
 
-# --- Property type ---
+# --- Property Type ---
 tipe = st.selectbox(t('type'), ["rumah", "apartemen"])
 
-# --- Ratio otomatis ---
-auto_ratio = st.checkbox("Hitung otomatis ‘ratio_bangunan ruma’ = LB / LT", value=True)
+# --- Auto ratio ---
+auto_ratio = st.checkbox("Hitung otomatis 'ratio_bangunan ruma' = LB / LT", value=True)
 ratio_bangunan = round(luas_bangunan / luas_tanah, 3) if auto_ratio and luas_tanah else None
 if ratio_bangunan is not None:
     st.caption(f"📏 ratio_bangunan ruma (auto): {ratio_bangunan}")
 
-# ====== SECTION PREDIKSI ======
+# ====== PREDICTION SECTION ======
 st.markdown("---")
 
-# Create the results section
-st.markdown("---")
-st.markdown(f"### {t('prediction_results')}")
+# Create columns for input and results
+col_input, col_results = st.columns([2, 3])
 
-# Create two columns for metrics
-col1, col2 = st.columns(2)
+with col_input:
+    predict_button = st.button(f"🔮 {t('predict_button')}")
 
-with col1:
-    price_placeholder = st.empty()
-    price_placeholder.metric(t('predicted_price'), "---")
+with col_results:
+    if predict_button:
+        # Check if we're in demo mode (Streamlit Cloud)
+        if api_url == "demo":
+            # Demo mode - simulate prediction
+            import random
+            base_price = (luas_bangunan * luas_tanah * 500000)  # Rough estimate
+            variation = random.uniform(0.8, 1.2)
+            demo_price = base_price * variation
 
-with col2:
-    confidence_placeholder = st.empty()
-    confidence_placeholder.metric(t('confidence_score'), "---")
+            st.success(f"💰 Prediksi harga (Demo): Rp {demo_price:,.0f}")
+            # st.info("📝 *Mode Demo*: FastAPI tidak tersedia di Streamlit Cloud. Prediksi ini hanya simulasi.")
 
-def make_prediction(data):
-    """Make API call with retry logic and proper error handling."""
-    for attempt in range(3):  # 3 retries
-        try:
-            with st.spinner(t('predicting')):
-                response = requests.post(
-                    f"{api_url}/predict",
-                    json=data,
-                    timeout=timeout
-                )
-                response.raise_for_status()
-                result = response.json()
-                
-                # Update metrics with results
-                price_placeholder.metric(
-                    t('predicted_price'),
-                    f"Rp {result['prediction']:,.0f}"
-                )
-                confidence_placeholder.metric(
-                    t('confidence_score'),
-                    f"{result.get('confidence', 92)}%"
-                )
-                
-                # Show prediction range
-                low = result['prediction'] * 0.9
-                high = result['prediction'] * 1.1
-                st.success(f"💰 {t('price_range')}: Rp {low:,.0f} - Rp {high:,.0f}")
-                
-                return result
-                
-        except requests.exceptions.Timeout:
-            if attempt == 2:  # Last attempt
-                st.error(t('error_timeout'))
-                return None
-            time.sleep(1)  # Wait before retry
-        except requests.exceptions.RequestException as e:
-            st.error(t('error_api').format(str(e)))
-            return None
-        except Exception as e:
-            st.error(t('error_prediction').format(str(e)))
-            return None
-    return None
+            # Show demo details
+            with st.expander("Detail Prediksi Demo"):
+                st.write(f"Luas Bangunan: {luas_bangunan} m²")
+                st.write(f"Luas Tanah: {luas_tanah} m²")
+                st.write(f"Kamar Tidur: {kamar_tidur}")
+                st.write(f"Kamar Mandi: {kamar_mandi}")
+                st.write(f"Provinsi: {provinsi}")
+                st.write(f"Kota/Kabupaten: {kota_kab}")
+                st.write(f"Tipe Properti: {tipe}")
+                if ratio_bangunan:
+                    st.write(f"Ratio Bangunan: {ratio_bangunan:.3f}")
 
-# Cache successful predictions
-@st.cache_data(ttl=3600)  # Cache for 1 hour
-def cached_prediction(data_key):
-    return make_prediction(data_key)
+        else:
+            # Normal mode - call actual API
+            payload = {
+                "LB": float(luas_bangunan),
+                "LT": float(luas_tanah),
+                "KM": int(kamar_mandi),
+                "KT": int(kamar_tidur),
+                "Provinsi": provinsi,
+                "Kota/Kab": kota_kab,
+                "Type": tipe
+            }
 
-# Prediction button
-predict_button = st.button(f"🔮 {t('predict_button')}", use_container_width=True)
+            if ratio_bangunan is not None:
+                payload["ratio_bangunan ruma"] = float(ratio_bangunan)
 
-if predict_button:
-    # Input validation
-    if not all([luas_bangunan, luas_tanah, kamar_tidur, kamar_mandi, provinsi, kota_kab, tipe]):
-        st.error(t('error_missing_inputs'))
-    else:
-        # Prepare request data
-        payload = {
-            "LB": float(luas_bangunan),
-            "LT": float(luas_tanah),
-            "KM": int(kamar_mandi),
-            "KT": int(kamar_tidur),
-            "Provinsi": provinsi,
-            "Kota/Kab": kota_kab,
-            "Type": tipe
-        }
-
-        if ratio_bangunan is not None:
-            payload["ratio_bangunan_rumah"] = float(ratio_bangunan)
-
-        try:
-            with st.spinner(t('predicting')):
+            try:
                 resp = requests.post(f"{api_url}/predict", json=payload, timeout=timeout)
                 if resp.ok:
                     result = resp.json()
-                    price_placeholder.metric(
-                        t('predicted_price'),
-                        f"Rp {result['prediction']:,.0f}"
-                    )
-                    confidence_placeholder.metric(
-                        t('confidence_score'),
-                        f"{result.get('confidence', 92)}%"
-                    )
-                    
-                    # Show prediction range
-                    low = result['prediction'] * 0.9
-                    high = result['prediction'] * 1.1
-                    st.info(f"💰 {t('price_range')}: Rp {low:,.0f} - Rp {high:,.0f}")
+                    prediction = result.get('prediction', 0)
+                    confidence = result.get('confidence_score', 0)
+                    price_range = result.get('price_range', (0, 0))
+                    model_name = result.get('model_name', 'Unknown')
+
+                    st.success(f"💰 {t('predicted_price')}: Rp {prediction:,.0f}")
+                    # st.info(f"🎯 {t('confidence_score')}: {confidence:.1%}")
+                    # st.info(f"📊 {t('price_range')}: Rp {price_range[0]:,.0f} - Rp {price_range[1]:,.0f}")
+                    # st.info(f"🤖 {t('model_used')}: {model_name}")
                 else:
                     st.error(f"API error [{resp.status_code}]: {resp.text}")
-        except requests.exceptions.Timeout:
-            st.error(t('error_timeout'))
-        except Exception as e:
-            st.error(f"{t('error_api')}: {str(e)}")
+            except Exception as e:
+                st.error(f"{t('error_api')}: {e}")
